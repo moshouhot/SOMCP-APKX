@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SoReverseNativeMcp"
+rootProject.name = "SOMCP-APKX"
 include(":app")

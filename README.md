@@ -1,16 +1,88 @@
-# SOMCP
+# SOMCP-APKX
 
-SOMCP 是一个运行在 Android 手机上的本地 SO 逆向 MCP 服务器。它通过 Streamable HTTP 暴露 MCP 工具，让客户端可以在手机上完成 ELF 结构分析、Rizin 反汇编/分析、LIEF ELF 修复/重写、补丁会话、构建导出、Cloudflare Tunnel 暴露和可选 APK MCP 桥接。
+SOMCP-APKX 是 [SOMCP](https://github.com/bilieebiliee1-design/SOMCP) 的二次开发版本，**以 SOMCP `1.0.22` 源码树为基线**，在其上移植了 APK 全链路工具链。
 
-当前版本：`1.0.22`（`app/build.gradle.kts` 的 `versionName`，`versionCode` 23）。已发布的正式产物见 [GitHub Releases](https://github.com/bilieebiliee1-design/SOMCP/releases)，两者不必同名：源码树里的版本可以领先于最近一次发布。
+上游能力完整保留：ELF 结构分析、Rizin 反汇编/分析、LIEF ELF 修复/重写、补丁会话、构建导出、Unidbg 模拟执行、AI 深度分析、子代理、JNI/壳/混淆/字符串解密/反调试/导入溯源、Cloudflare Tunnel、APK MCP 桥接、Flutter AOT（Blutter）分析。
+
+本版新增一条**纯 APK 工作流**：DEX → Java 反编译、DEX ↔ smali 往返、资源解包、APK 回编/合并拆分包、v1/v2/v3 签名、加固壳内存脱壳、反混淆查找、字符串/密钥扫描、签名证书核对、两版 APK 差异、资源提取、内置 frida-server 起停。
+
+当前版本：`1.0.22`（沿用基线 `versionName` / `versionCode` 23；本仓库按源码树分发，不发布 GitHub Release）
 
 包名：`com.soreverse.mcp`
 
 最低系统：Android 8.0 / API 26
 
-许可证：`AGPL-3.0`。SOMCP 主项目依据 [GNU Affero General Public License v3.0](LICENSE) 发布。仓库中的第三方依赖、submodule、生成资源和补丁仍分别遵循各自上游许可证，AGPL-3.0 声明不会替代其原有许可条款。
+许可证：`AGPL-3.0-only`。本项目是 SOMCP 的衍生作品，继续以 [GNU Affero General Public License v3.0](LICENSE) 授权，并保留上游 [NOTICE](NOTICE) 与运行时溯源信息。
 
-> **再分发义务（重要）**：本软件受《中华人民共和国著作权法》与《计算机软件保护条例》保护。任何再分发（含修改、改名、二次打包版本）必须：保留版权与许可声明及 [NOTICE](NOTICE)、继续以 AGPL-3.0 授权、向每一位接收者提供完整对应源代码、并标注所做修改。闭源分发、抹除署名或改名冒充原创即构成侵权——依 AGPL-3.0 第 8 条授权自动终止，权利人可要求停止侵害、下架、公开更正并索赔（GPL 在中国司法实践中已被确认有效可强制执行，参见"数字天堂诉柚子科技""罗盒诉风灵"等案）。维权模板见 [docs/legal](docs/legal)。本软件在 MCP `initialize`/健康检查返回与"关于"页固定输出许可证、上游仓库与版权，作为运行时溯源证据。
+> **再分发义务（重要）**：本软件受《中华人民共和国著作权法》与《计算机软件保护条例》保护。任何再分发（含修改、改名、二次打包版本）必须：保留版权与许可声明及 [NOTICE](NOTICE)、继续以 AGPL-3.0 授权、向每一位接收者提供完整对应源代码、并标注所做修改。上游 1.0.22 已把许可正文嵌进 DEX 与三个自建 `.so`（`Provenance.LICENSE_TEXT` / `cpp/license_notice.h`），该机制在本项目中完整保留。闭源分发、抹除署名或改名冒充原创即构成侵权——依 AGPL-3.0 第 8 条授权自动终止。本软件在 MCP `initialize`/健康检查返回与"关于"页固定输出许可证、上游仓库与版权，作为运行时溯源证据。
+
+## 相对上游 1.0.22 的改动
+
+只做加法，没有删除或回退任何上游能力、测试或构建校验。
+
+| 改动 | 位置 |
+|---|---|
+| 新增 13 个 APK 全链路工具并注册进精简可见列表 | `app/src/main/java/com/soreverse/mcp/mcp/{JadxTool,StaticTools,ApkBuildTool,ApkEditorTool,DexKitTool,StringScanTool,ApkSignInfoTool,ApkDiffTool,ApkExtractTool,UnpackTool,FridaTool}.kt`、`mcp/ToolCatalog.kt` |
+| 新增 root shell / frida-server / 内存脱壳实现 | `core/{RootShell,FridaManager,UnpackManager}.kt` |
+| 新增移植工具的自产物防护、输入体积与堆闸门 | `mcp/ApkToolGuards.kt` |
+| 新增 `decompile` / `dynamic` 两个工具分类并扩充 `build` 描述 | `mcp/ToolCatalogPresentation.kt` |
+| 错误目录补齐移植工具的错误码 | `mcp/McpHttpServer.kt` |
+| 新增 9 条 JVM 依赖（jadx / ARSCLib+APKEditor / smali / apksig / bouncycastle / dexkit / slf4j） | `app/build.gradle.kts` |
+| 新增加载期保类规则 | `app/proguard-rules.pro` |
+| 新增 6 条回归测试 | `app/src/test/java/com/soreverse/mcp/mcp/ApkToolchainTest.kt` |
+
+### 与衍生版本 XuanXingNieHe 的差异
+
+`XuanXingNieHe` 同样移植了这批工具，但代码基线停在 SOMCP `1.0.9` 并删除了 9 个上游工具网关与 `Provenance` / `MemoryGuard` / `SelfArtifactGuard` / `AppListGuard` / `ShellAssets` / 备份加密 / 子代理。本项目以 `1.0.22` 为基线，因此额外获得：
+
+- 1.0.10 → 1.0.22 的全部修复：Rizin/LIEF 原生调用进程级串行化（修 `rz_core_free` 双释放 SIGSEGV）、APK 扫描与 SO 提取流式化、Flutter 解析 mmap 化（`-Xmx64m` 下整包分析不再 OOM）、更新包 SHA-256 强制校验、事务批处理精确回滚、Blutter 作业取消与分页。
+- 仍可源码重建：`build-rizin*.ps1` / `build-lief*.ps1` / `build-unidbg-native.*` 与 `third_party` 子模块声明完整保留。
+- Unidbg 依赖完整（`com.github.zhkl0228:unicorn:1.0.15` 未被裁掉），`BackendFactory` 不会因缺 `unicorn.*` 类回落到不可用后端。
+- 安全默认值保持上游取向：`authEnabled` 默认开启、`IntegrityGuard` 与自产物防护启用、GitHub 更新检测可用。
+- 许可链完整：`NOTICE`、SPDX 头、DEX 与三个 `.so` 内的 AGPL 正文均在。
+
+## APK 工具链（新增）
+
+| 工具 | 作用 | 依赖 | 需要 root |
+|---|---|---|---|
+| `jadx_decompile` | DEX/APK/JAR → Java（`action=save/class/list`） | jadx | 否 |
+| `baksmali_decode` | DEX → smali 源码目录 | smali | 否 |
+| `smali_assemble` | smali 目录 → DEX | smali | 否 |
+| `apk_decode` | 清单/权限/资源清单/二进制 XML 解码 | ARSCLib | 否 |
+| `apk_rebuild` | 完整回编、合并拆分包、去混淆重命名 | APKEditor | 否 |
+| `apk_sign` | v1/v2/v3 签名，首次自动生成内置自签密钥 | apksig + BouncyCastle | 否 |
+| `apk_sign_info` | 签名方案与证书指纹核对 | apksig | 否 |
+| `dex_search` | 按字符串/方法特征反查被混淆的类与方法 | DexKit | 否 |
+| `string_scan` | URL/邮箱/IP/JWT/AK-SK/私钥 扫描 | 内置 | 否 |
+| `apk_diff` | 两版 APK 的清单/权限/SO/资源差异 | ZIP + ARSCLib | 否 |
+| `apk_extract` | 列出并提取 APK 内条目 | 内置 | 否 |
+| `dex_unpack` | root 内存 dump 绕过磁盘加固壳 | root shell | **是** |
+| `frida_control` | 内置 frida-server 起停与进程枚举 | root shell | **是** |
+
+典型闭环：
+
+```text
+apk_decode(path=...)                        # 先看清单/权限
+jadx_decompile(path=..., action=save)       # DEX → Java 速读
+baksmali_decode(path=classes.dex)           # 需要改字节码时 DEX → smali
+smali_assemble(smaliDir=...)                # 改完 smali → 新 DEX
+apk_rebuild(action=decode|build|merge, ...) # 替换 dex / 回编成 APK
+apk_sign(inputApk=...)                      # 签名后才能安装
+```
+
+加固样本：`dex_unpack(action=pslist)` 找包名 → 先手动打开目标 App 让壳解密 dex 进内存 → `dex_unpack(action=dump, package=...)` → 把 dump 出的 dex 交给 `jadx_decompile` / `baksmali_decode`。三代指令抽取壳的方法体可能是 nop，本工具不做指令修复。
+
+### 移植时补的三类防护
+
+移植工具接受任意本地路径，因此必须继承上游对自产物的保护，否则 `jadx_decompile` / `apk_extract` 会变成导出本 App 自身 dex、资源与内置 `.so` 的口子：
+
+1. **自产物防护**：所有带路径参数的移植工具在进入库调用前先过 `SelfArtifactGuard`，命中则返回 `SELF_ANALYSIS_FORBIDDEN`。
+2. **输入体积闸门**：512 MiB 上限（`INPUT_TOO_LARGE`），jadx/DexKit 这类会把输入放大数倍建对象树的库靠它提前失败。
+3. **堆闸门**：`jadx_decompile` / `dex_search` / `apk_rebuild` 调用前走 `MemoryGuard.ensureAnalysisMemory`，内存不足映射为 `INSUFFICIENT_MEMORY` 而不是 `OutOfMemoryError`。
+
+### 可见性
+
+上游默认 `leanTools=true`，只广告 `CORE`/`META` 与网关类。13 个新工具因此注册为 `CORE`：若注册为 `EXTRA`、又落在既无热度也无网关豁免的分类里，新客户端将永远看不到它们（衍生版本 XuanXingNieHe 正是踩了这个坑）。`ApkToolchainTest` 用测试钉死这一点。
 
 ## APK 位置
 
@@ -76,10 +148,11 @@ Release 输出体积随原生后端更新变化，以 GitHub Release 资产页�
 - Cloudflare 永久隧道支持配置要展示的 HTTPS 公网地址；认证失败会停止重连并提示更新 token。
 - APK 内 SO 使用流式扫描与按需提取，分析页可一键释放工作区、索引缓存和已结束的 Blutter 数据。
 - 精简工具列表：默认暴露核心 + 网关（`lowlevel` 与 `agent`）+ meta 工具，完整能力通过 `meta_info(action=describe)` 发现。网关类不参与热度晋级——它们是入口而非证据调用，藏起来等于让对应能力不可达。
+- **APK 全链路（本版新增）**：jadx DEX→Java、baksmali/smali 往返、ARSCLib 清单与资源解包、APKEditor 回编与合并拆分包、apksig v1/v2/v3 签名与证书核对、DexKit 反混淆查找、字符串/密钥扫描、两版 APK 差异、条目提取；root 侧提供内存 DEX 脱壳与内置 frida-server 起停。详见上文「APK 工具链」。
 
 ## MCP 工具体系
 
-当前共 46 个内置工具，准确数量以 `tools/list` 返回的 `_meta.fullToolCount` 为准；默认 lean 模式会广告核心、底层网关和 meta 工具，降低 LLM 初始化上下文成本。
+当前共 60 个内置工具（上游 47 + 本版新增 13），准确数量以 `tools/list` 返回的 `_meta.fullToolCount` 为准；默认 lean 模式会广告核心、底层网关和 meta 工具，降低 LLM 初始化上下文成本。
 
 推荐工作流：
 

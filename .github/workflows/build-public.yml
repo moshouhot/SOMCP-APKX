@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Public build. Deliberately depends on NO repository secret, so a fork or a
+# fresh clone can exercise it from the Actions tab without asking the
+# maintainer for signing keys.
+#
+# Why this exists next to build.yml / release.yml: those two are the upstream
+# release pipeline and require KEYSTORE / ALIAS / ALIAS_PASSWORD / PASSWORD
+# (release signing keys) plus TM and LRP_API_KEY (native key material). With
+# none of them configured the upstream workflows fail at their first secret
+# assertion. This workflow instead builds the *debug* variant, which is signed
+# with the throwaway AE debug keystore AGP generates locally, and relies on the
+# documented fallbacks for native key material:
+#   - TM unset            -> CMake generates a per-build random XOR key
+#                            (see app/src/main/cpp/CMakeLists.txt); signer pins
+#                            stay encoded, they are simply not comparable
+#                            across rebuilds.
+#   - LRP_API_KEY unset   -> telemetry payloads are sent without an API key.
+#   - REQUIRE_NATIVE_BACKENDS defaults to OFF -> a missing Rizin/LIEF archive
+#                            yields the stub librz_native.so instead of a hard
+#                            failure.
+#
+# What the produced APK can do: everything that is pure JVM — including the
+# whole ported APK toolchain (jadx / baksmali / smali / APKEditor / apksig /
+# DexKit / string_scan / apk_diff / apk_extract) and the root-shell tools
+# (dex_unpack / frida_control). SO/ELF analysis through Rizin, LIEF, Unidbg and
+# the Ghidra decompiler needs the cross-compiled natives and is only present in
+# the artifacts produced by build.yml.
+
+name: Build (public, no secrets)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push supersedes an in-flight run: the artifact should correspond to
+# the branch tip, not to a stale queue entry.
+concurrency:
+  group: build-public-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # The JVM path is the bulk of this job; 60 minutes leaves ample headroom
+    # while still bounding a wedged network step.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # app/src/main/cpp/CMakeLists.txt reads sources out of
+          # third_party/xAnSo-src and friends at configure time, so an empty
+          # submodule directory is a hard configure failure even when the
+          # Rizin/LIEF archives are intentionally left unbuilt.
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # The repo ships gradle/wrapper/gradle-wrapper.properties but no gradlew
+      # launcher, so provision the same Gradle version through the action.
+      - name: Set up Gradle 9.6.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6.1'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      # NDK and CMake versions are pinned by app/build.gradle.kts
+      # (ndkVersion / externalNativeBuild.cmake.version). Installing them
+      # explicitly keeps the build off AGP's auto-download path, which needs
+      # licence acceptance this job does not perform.
+      - name: Install SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends meson ninja-build gcc g++ pkg-config
+
+      # Ported APK toolchain regressions surface here: ToolCatalog registration,
+      # lean-mode visibility, declared tool categories, input schemas and the
+      # heavy-call classification. The two SelfArtifactGuard cases that fail on
+      # a Windows dev box (File.canonicalPath rewrites /data/app/... to a drive
+      # path) are expected to pass on Linux; that is part of what this job
+      # establishes.
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Assemble debug APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Report what the APK actually contains
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-universal-debug.apk
+          test -f "$apk" || apk=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "### Artifact" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -la "$(dirname "$apk")" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Byte-scan the dex for the ported tool names: a silently dropped
+          # handler (R8 shrinking it away, a registration lost in a merge) is
+          # invisible in the build log and only shows up as a missing MCP tool.
+          python3 - "$apk" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import sys, zipfile
+          apk = sys.argv[1]
+          z = zipfile.ZipFile(apk)
+          blob = b"".join(z.read(n) for n in z.namelist() if n.endswith(".dex"))
+          tools = ["jadx_decompile", "baksmali_decode", "apk_decode", "smali_assemble",
+                   "apk_rebuild", "apk_sign", "apk_sign_info", "dex_search", "string_scan",
+                   "apk_diff", "apk_extract", "dex_unpack", "frida_control"]
+          print("\n### Ported APK toolchain present in dex\n")
+          print("| tool | in dex |")
+          print("|---|---|")
+          missing = []
+          for t in tools:
+              ok = t.encode() in blob
+              print(f"| `{t}` | {'yes' if ok else '**NO**'} |")
+              if not ok:
+                  missing.append(t)
+          if missing:
+              print(f"\n::error::missing from dex: {', '.join(missing)}")
+              sys.exit(1)
+          print(f"\nAll {len(tools)} ported tools are present.")
+          PY
+
+      - name: Verify native backend status (informational)
+        run: |
+          # Expected to be stubs in this job: Rizin/LIEF are not cross-compiled
+          # here. Printed so the artifact is not mistaken for a full build.
+          echo "### Native backends" >> "$GITHUB_STEP_SUMMARY"
+          echo 'This build does not cross-compile Rizin / LIEF / Unidbg / rz-ghidra,' >> "$GITHUB_STEP_SUMMARY"
+          echo 'so librz_native.so is the stub: SO/ELF analysis degrades, while the' >> "$GITHUB_STEP_SUMMARY"
+          echo 'pure-JVM APK toolchain is fully functional. Use build.yml (which requires' >> "$GITHUB_STEP_SUMMARY"
+          echo 'signing secrets) for a release artifact with native backends.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: somcp-apkx-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report-${{ github.sha }}
+          path: app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14
