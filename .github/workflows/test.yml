@@ -1,0 +1,37 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  # GITHUB_TOKEN 会抑制它自己触发的 push 事件（GitHub 官方规则，例外只有
+  # workflow_dispatch / repository_dispatch），因此由 pr-auto-review.yml 自动
+  # 合并进 main 的提交不会自动跑本工作流。该工作流在合并成功后用 dispatch
+  # 补触发一遍，这里保留入口。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.1"
+      - uses: android-actions/setup-android@v3
+        with:
+          # The action's default packages are "tools platform-tools". Google has
+          # removed the legacy `tools` package from the SDK repository, so keep
+          # platform-tools only.
+          packages: platform-tools
+      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - run: gradle :app:testDebugUnitTest --stacktrace

@@ -1,0 +1,40 @@
+name: Test v2
+
+on:
+  push:
+    branches:
+      - main
+  # 见 test.yml：自动合并（GITHUB_TOKEN）不会触发 push 事件，由
+  # pr-auto-review.yml 在合并后 dispatch 补触发。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.1"
+      - uses: android-actions/setup-android@v3
+        with:
+          # The action's default packages are "tools platform-tools". Google has
+          # removed the legacy `tools` package from the SDK repository, so keep
+          # platform-tools only.
+          packages: platform-tools
+      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+      - name: Lint check
+        run: gradle :app:lintDebug --stacktrace
+      - name: Debug build
+        run: gradle :app:assembleDebug --stacktrace
+      - name: Unit tests (strict)
+        run: gradle :app:testDebugUnitTest --stacktrace -Pkotlin.compiler.allWarningsAsErrors=true

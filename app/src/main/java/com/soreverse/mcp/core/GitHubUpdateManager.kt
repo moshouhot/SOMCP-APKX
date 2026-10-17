@@ -1,0 +1,690 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Copyright (C) 2026 bilieebiliee1-design
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+//
+package com.soreverse.mcp.core
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.FileProvider
+import com.soreverse.mcp.BuildConfig
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class GitHubRelease(
+    val tag: String,
+    val name: String,
+    val notes: String,
+    val pageUrl: String,
+    val apkName: String,
+    val apkUrl: String,
+    val apkSize: Long,
+    val checksumUrl: String?,
+    /** Release publishtime (ISO-8601, UTC). "" when the API omitted it. Used to
+     *  tell a same-version republish apart from the build already installed. */
+    val publishedAt: String = ""
+)
+
+sealed interface UpdateCheckResult {
+    data class Available(val release: GitHubRelease) : UpdateCheckResult
+    data object Current : UpdateCheckResult
+}
+
+/** Update channel: stable official releases, or pre-release (beta) builds. */
+enum class UpdateChannel { STABLE, BETA }
+
+sealed interface UpdateDownloadEvent {
+    data class Probing(val total: Int) : UpdateDownloadEvent
+    data class ProbeResult(val source: String, val reachable: Boolean, val latencyMs: Long, val completed: Int, val total: Int) : UpdateDownloadEvent
+    data class Selected(val source: String) : UpdateDownloadEvent
+    data class Downloading(val source: String, val percent: Int) : UpdateDownloadEvent
+    data object Verifying : UpdateDownloadEvent
+
+    /** Emitted only when the release publishes no checksum asset at all. When a
+     *  checksum asset exists, verification is mandatory: fetch failure or digest
+     *  mismatch aborts the install instead of degrading to an unverified result. */
+    data class VerifySkipped(val reason: String) : UpdateDownloadEvent
+}
+
+/** The checksum asset exists but could not be fetched from the official source.
+ *  Hard failure: the caller must abort the install (a mirror that silently
+ *  drops checksum requests must not be able to downgrade verification). */
+class ChecksumUnavailableException(message: String) : Exception(message)
+
+/** A checksum was fetched but did not match the download; hard failure. */
+class ChecksumMismatchException(message: String) : Exception(message)
+
+class GitHubUpdateManager(private val context: Context) {
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+    private val probeClient = client.newBuilder()
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .callTimeout(5, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .build()
+
+    // Serializes the whole download() body. When the user switches mirrors we
+    // cancel the previous download coroutine, but cancellation is cooperative and
+    // the old coroutine may still be mid-write when the new one starts. Without
+    // this lock two coroutines could race on the same .part file, and a
+    // late-finishing old mirror could overwrite/verify on top of the new one
+    // (exactly the "mirror A finishes then B downloads again" bug). Holding the
+    // mutex for the entire download makes a new attempt wait until the previous
+    // one has fully unwound.
+    private val downloadMutex = Mutex()
+
+    suspend fun check(channel: UpdateChannel = UpdateChannel.STABLE): Result<UpdateCheckResult> = withContext(Dispatchers.IO) {
+        try {
+            val result = when (channel) {
+                UpdateChannel.STABLE -> checkStable()
+                UpdateChannel.BETA -> checkBeta()
+            }
+            Result.success(result)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
+    }
+
+    /** Checks BOTH channels and reports the highest release of either, so the
+     *  automatic prompt also surfaces beta builds (a stable-only check misses
+     *  every pre-release published after the latest stable). Per-channel manual
+     *  checks (Settings > Updates) keep honouring the selected channel. A
+     *  channel that fails is ignored as long as the other yields a verdict. */
+    suspend fun checkAnyChannel(): Result<UpdateCheckResult> = withContext(Dispatchers.IO) {
+        try {
+            val releases = listOf(
+                runCatching { checkStable() },
+                runCatching { checkBeta() }
+            ).mapNotNull { it.getOrNull() }
+                .filterIsInstance<UpdateCheckResult.Available>()
+                .map { it.release }
+            val newest = releases.reduceOrNull { acc, release ->
+                val order = compareVersions(release.tag, acc.tag)
+                when {
+                    order > 0 -> release
+                    order < 0 -> acc
+                    else -> if (release.publishedAt > acc.publishedAt) release else acc
+                }
+            }
+            Result.success(newest?.let { UpdateCheckResult.Available(it) } ?: UpdateCheckResult.Current)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
+    }
+
+    private suspend fun checkStable(): UpdateCheckResult = fetchReleases { array ->
+        // Do NOT trust /releases/latest: GitHub picks it by release creation
+        // time, not by version. Republishing (or editing) an older release
+        // moves that pointer back to the lower tag, and then any newer release
+        // becomes invisible — users silently stop getting update prompts.
+        // Enumerate the list and take the highest stable tag ourselves.
+        newestRelease(array, prerelease = false)
+    }
+
+    private suspend fun checkBeta(): UpdateCheckResult = fetchReleases(required = false) { array ->
+        newestRelease(array, prerelease = true)
+    }
+
+    private suspend fun fetchReleases(required: Boolean = true, pick: (JSONArray) -> JSONObject?): UpdateCheckResult {
+        val request = Request.Builder()
+            .url("${RELEASES_URL}?per_page=100")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "SOMCP/${BuildConfig.VERSION_NAME}")
+            .build()
+        return client.newCall(request).await().use { response ->
+            if (!response.isSuccessful) {
+                error(
+                    "GitHub HTTP ${response.code} ${response.message}"
+                )
+            }
+            val array = JSONArray(response.body.string())
+            pick(array)?.let { buildRelease(it, required = required) } ?: UpdateCheckResult.Current
+        }
+    }
+
+    /** Highest non-draft release of the requested prerelease state; ties
+     *  (same-version republish) break by publishtime. */
+    private fun newestRelease(array: JSONArray, prerelease: Boolean): JSONObject? {
+        var candidate: JSONObject? = null
+        var candidateTime = ""
+        for (index in 0 until array.length()) {
+            val release = array.getJSONObject(index)
+            if (release.optBoolean("draft") ||
+                release.optBoolean("prerelease") != prerelease
+            ) {
+                continue
+            }
+            val tag = release.optString("tag_name")
+            val published = release.optString("published_at")
+                .ifBlank { release.optString("created_at") }
+            val better = when {
+                candidate == null -> true
+                else -> when (val order = compareVersions(tag, candidate.optString("tag_name"))) {
+                    0 -> published > candidateTime
+                    else -> order > 0
+                }
+            }
+            if (better) {
+                candidate = release
+                candidateTime = published
+            }
+        }
+        return candidate
+    }
+
+    /** Semver-order comparison of two release tags: >0 if [left] is the
+     *  higher version, 0 if equal. Ordering: numeric core first, then the
+     *  pre-release suffix per semver (1.0.0-beta < 1.0.0, beta1 < beta2), so
+     *  a stale beta never outranks its own final release. Tags with no
+     *  numeric core rank below every versioned tag. */
+    private fun compareVersions(left: String, right: String): Int {
+        val a = versionParts(left)
+        val b = versionParts(right)
+        if (a.isEmpty() != b.isEmpty()) return if (a.isEmpty()) -1 else 1
+        compareCore(a, b)?.let { return it }
+        return comparePrerelease(prereleaseOf(left), prereleaseOf(right))
+    }
+
+    /** Component-wise core comparison, zero-padded; null when equal. */
+    private fun compareCore(left: List<Int>, right: List<Int>): Int? {
+        for (index in 0 until maxOf(left.size, right.size)) {
+            val comparison = (left.getOrNull(index) ?: 0).compareTo(right.getOrNull(index) ?: 0)
+            if (comparison != 0) return comparison
+        }
+        return null
+    }
+
+    /** Pre-release suffix (after the first '-', build metadata '+' dropped);
+     *  null for a clean release tag. */
+    private fun prereleaseOf(version: String): String? {
+        val core = version.trim().removePrefix("v").substringBefore('+')
+        val index = core.indexOf('-')
+        return if (index < 0) null else core.substring(index + 1)
+    }
+
+    /** Semver pre-release precedence: absent suffix outranks any; otherwise
+     *  dot-separated identifiers compare numerically / lexically, and the
+     *  shorter field-wise prefix is smaller (alpha < alpha.1). */
+    private fun comparePrerelease(left: String?, right: String?): Int = when {
+        left == null && right == null -> 0
+        left == null -> 1
+        right == null -> -1
+        else -> {
+            val l = left.split('.')
+            val r = right.split('.')
+            for (index in 0 until maxOf(l.size, r.size)) {
+                val li = l.getOrNull(index) ?: return -1
+                val ri = r.getOrNull(index) ?: return 1
+                val ln = li.toIntOrNull()
+                val rn = ri.toIntOrNull()
+                val comparison = when {
+                    ln != null && rn != null -> ln.compareTo(rn)
+                    ln != null -> -1
+                    rn != null -> 1
+                    else -> li.compareTo(ri)
+                }
+                if (comparison != 0) return comparison
+            }
+            0
+        }
+    }
+
+    /** Numeric core of a version tag: the dotted numbers before any
+     *  -suffix/+build. */
+    private fun versionParts(version: String): List<Int> = version.trim().removePrefix(
+        "v"
+    ).substringBefore('-').substringBefore('+').split('.').mapNotNull(String::toIntOrNull)
+
+    private fun buildRelease(root: JSONObject, required: Boolean): UpdateCheckResult {
+        val tag = root.optString("tag_name")
+        val publishedAt = root.optString("published_at")
+            .ifBlank { root.optString("created_at") }
+        if (!isUpdateOfferable(tag, publishedAt)) return UpdateCheckResult.Current
+        val assets = root.optJSONArray("assets")
+        val apk = assets?.let { selectApk((0 until it.length()).map { index -> it.getJSONObject(index) }, Build.SUPPORTED_ABIS) }
+            ?: return if (required) error("Release has no APK for ${Build.SUPPORTED_ABIS.joinToString()}") else UpdateCheckResult.Current
+        val checksum = (0 until assets.length())
+            .map { assets.getJSONObject(it) }
+            .firstOrNull {
+                val name = it.optString("name")
+                name == "${apk.optString("name")}.sha256" || name == "SHA256SUMS"
+            }
+        return UpdateCheckResult.Available(
+            GitHubRelease(
+                tag = tag,
+                name = root.optString("name").ifBlank { tag },
+                notes = root.optString("body"),
+                pageUrl = root.optString("html_url"),
+                apkName = apk.getString("name"),
+                apkUrl = apk.getString("browser_download_url"),
+                apkSize = apk.optLong("size"),
+                checksumUrl = checksum?.optString(
+                    "browser_download_url"
+                )?.takeIf(String::isNotBlank),
+                publishedAt = publishedAt
+            )
+        )
+    }
+
+    suspend fun download(release: GitHubRelease, forcedSource: String? = null, onEvent: (UpdateDownloadEvent) -> Unit): Result<File> =
+        withContext(Dispatchers.IO) {
+            try {
+                downloadMutex.withLock {
+                    suspend fun emit(event: UpdateDownloadEvent) {
+                        withContext(Dispatchers.Main.immediate) { onEvent(event) }
+                    }
+                    // A previous (now-cancelled) attempt may have just completed and
+                    // populated the cache; re-check inside the lock so a mirror switch
+                    // that raced a finishing download reuses the verified file instead
+                    // of downloading again.
+                    cachedDownload(release)?.let { return@withLock Result.success(it) }
+                    val directory = File(context.cacheDir, "updates").apply { mkdirs() }
+                    val target = File(directory, release.apkName.substringAfterLast('/'))
+                    val partial = File(directory, "${target.name}.part")
+                    val verified = File(directory, "${target.name}.verified")
+                    directory.listFiles()?.filter {
+                        it !in setOf(target, verified)
+                    }?.forEach { it.delete() }
+                    // When the user manually picks a mirror we honour it first and
+                    // skip the speed probe entirely (their choice solves the
+                    // "fast to probe but slow to download" case); the remaining
+                    // mirrors stay as automatic fallbacks after it.
+                    val candidates = if (forcedSource != null) {
+                        val all = DownloadMirrorPolicy.candidates(release.apkUrl)
+                        val preferred = all.filter { sourceName(it) == forcedSource }
+                        (preferred + all.filterNot { it in preferred }).ifEmpty { all }
+                    } else {
+                        rankedDownloadUrls(release.apkUrl, ::emit)
+                    }
+                    var lastFailure: Throwable? = null
+                    var downloaded = false
+                    for (url in candidates) {
+                        ensureActive()
+                        partial.delete()
+                        try {
+                            emit(UpdateDownloadEvent.Selected(sourceName(url)))
+                            val request = Request.Builder()
+                                .url(url)
+                                .header("User-Agent", "SOMCP/${BuildConfig.VERSION_NAME}")
+                                .build()
+                            client.newCall(request).await().use { response ->
+                                if (!response.isSuccessful) {
+                                    error(
+                                        "Download HTTP ${response.code} ${response.message}"
+                                    )
+                                }
+                                val body = response.body
+                                val total = body.contentLength().takeIf { it > 0 } ?: release.apkSize
+                                body.byteStream().use { input ->
+                                    partial.outputStream().use { output ->
+                                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                                        var copied = 0L
+                                        var lastPercent = -1
+                                        while (true) {
+                                            currentCoroutineContext().ensureActive()
+                                            val count = input.read(buffer)
+                                            if (count < 0) break
+                                            output.write(buffer, 0, count)
+                                            copied += count
+                                            if (total > 0) {
+                                                val percent = ((copied * 100) / total).toInt().coerceIn(
+                                                    0,
+                                                    100
+                                                )
+                                                if (percent != lastPercent) {
+                                                    lastPercent = percent
+                                                    emit(
+                                                        UpdateDownloadEvent.Downloading(
+                                                            sourceName(url),
+                                                            percent
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (partial.length() > 4 &&
+                                partial.inputStream().use {
+                                    val header = ByteArray(4)
+                                    it.read(header) == 4 &&
+                                        header.contentEquals(byteArrayOf(0x50, 0x4B, 0x03, 0x04))
+                                }
+                            ) {
+                                downloaded = true
+                                break
+                            }
+                            error("Downloaded asset is not a valid APK archive")
+                        } catch (error: CancellationException) {
+                            partial.delete()
+                            throw error
+                        } catch (error: Throwable) {
+                            lastFailure = error
+                        }
+                    }
+                    require(downloaded) { lastFailure?.message ?: "All download mirrors failed" }
+                    emit(UpdateDownloadEvent.Verifying)
+                    // Verification is mandatory whenever the release publishes a
+                    // checksum asset: both a fetch failure and a mismatch abort
+                    // the install. The old soft "VerifySkipped" fallback let an
+                    // attacker who controls any mirror force an unverified install
+                    // simply by dropping the checksum request. Only releases with
+                    // no checksum asset at all install unverified (and without the
+                    // .verified marker, so cached reuse re-checks once a checksum
+                    // appears).
+                    val verifiedHash = release.checksumUrl?.let { url ->
+                        runCatching { verifyChecksum(partial, url, target.name) }
+                            .getOrElse { failure ->
+                                partial.delete()
+                                throw failure
+                            }
+                    } ?: run {
+                        emit(UpdateDownloadEvent.VerifySkipped("no checksum published"))
+                        null
+                    }
+                    runCatching {
+                        Files.move(
+                            partial.toPath(),
+                            target.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE
+                        )
+                    }.getOrElse {
+                        Files.move(
+                            partial.toPath(),
+                            target.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING
+                        )
+                    }
+                    // Only persist the .verified marker when we actually verified the
+                    // hash; otherwise the cached-download fast path must re-check.
+                    if (verifiedHash != null) verified.writeText(verifiedHash) else verified.delete()
+                    Result.success(target)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                File(
+                    File(context.cacheDir, "updates"),
+                    "${release.apkName.substringAfterLast('/')}.part"
+                ).delete()
+                Result.failure(error)
+            }
+        }
+
+    fun cachedDownload(release: GitHubRelease): File? {
+        val file = File(File(context.cacheDir, "updates"), release.apkName.substringAfterLast('/'))
+        val verified = File(file.parentFile, "${file.name}.verified")
+        if (!file.isFile || file.length() <= 4) return null
+        val sizeOk = release.apkSize <= 0 || file.length() == release.apkSize
+        if (!sizeOk) return null
+        val expectedHash = verified.readTextOrNull()?.trim()?.lowercase()?.takeIf {
+            it.matches(Regex("[a-f0-9]{64}"))
+        }
+        if (expectedHash != null) {
+            // Re-hash the actual bytes: a predictable marker alone must never be trusted.
+            val actualHash = runCatching { fileSha256(file) }.getOrNull() ?: return null
+            return file.takeIf { actualHash == expectedHash }
+        }
+        // No verified marker: the file was never hash-verified. Only reuse it when
+        // the release publishes no checksum asset at all; when one exists, force
+        // a fresh download so the mandatory verification runs against the real
+        // bytes instead of trusting a structural (ZIP-magic) check.
+        if (release.checksumUrl != null) return null
+        val looksLikeApk = runCatching {
+            file.inputStream().use {
+                val header = ByteArray(4)
+                it.read(header) == 4 && header.contentEquals(byteArrayOf(0x50, 0x4B, 0x03, 0x04))
+            }
+        }.getOrDefault(false)
+        return file.takeIf { looksLikeApk }
+    }
+
+    private suspend fun rankedDownloadUrls(original: String, emit: suspend (UpdateDownloadEvent) -> Unit): List<String> = coroutineScope {
+        val candidates = DownloadMirrorPolicy.candidates(original)
+        emit(UpdateDownloadEvent.Probing(candidates.size))
+        val completed = java.util.concurrent.atomic.AtomicInteger(0)
+        val ranked = candidates.map { url ->
+            async(Dispatchers.IO) {
+                ensureActive()
+                val started = System.nanoTime()
+                val reachable = try {
+                    probeClient.newCall(
+                        Request.Builder()
+                            .head()
+                            .url(url)
+                            .header("User-Agent", "SOMCP/${BuildConfig.VERSION_NAME}")
+                            .build()
+                    ).await().use { it.isSuccessful || it.code in 300..399 || it.code == 405 }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Throwable) {
+                    false
+                }
+                val latencyMs = (System.nanoTime() - started) / 1_000_000
+                emit(
+                    UpdateDownloadEvent.ProbeResult(
+                        sourceName(url),
+                        reachable,
+                        latencyMs,
+                        completed.incrementAndGet(),
+                        candidates.size
+                    )
+                )
+                Triple(url, reachable, latencyMs)
+            }
+        }.awaitAll()
+        ranked.sortedWith(
+            compareByDescending<Triple<String, Boolean, Long>> { it.second }.thenBy { it.third }
+        ).map { it.first }
+    }
+
+    private fun sourceName(url: String): String = runCatching { Uri.parse(url).host.orEmpty() }
+        .getOrDefault(url.substringBefore('/'))
+
+    /** Distinct, user-selectable mirror host names for [release], in policy order. */
+    fun mirrorSources(release: GitHubRelease): List<String> = DownloadMirrorPolicy.candidates(release.apkUrl).map(::sourceName).filter {
+        it.isNotBlank()
+    }.distinct()
+
+    fun install(file: File): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !context.packageManager.canRequestPackageInstalls()
+        ) {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}")
+                )
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            return false
+        }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        )
+        return true
+    }
+
+    /** Whether the release [tag] (published at [publishedAt], ISO-8601 UTC)
+     *  should be offered as an update to this build.
+     *
+     *  Compares the NUMERIC CORE only against this APK's versionName (which
+     *  never carries a beta suffix): a higher core is always offered — that
+     *  covers both new stables and newer betas. Equal core is the
+     *  same-version case (republish, or beta1 -> beta2): offered only when
+     *  the release was published AFTER this APK's own release moment, which
+     *  the release workflow embeds via -PpublishedAt
+     *  (BuildConfig.RELEASE_PUBLISHED_AT). That single rule resolves the
+     *  users-indistinguishable-by-versionName dilemma: a stable 1.0.22 user
+     *  has embedded the final's publishtime, so the older beta 1.0.22-x
+     *  (published before it) is never offered; a beta1 user has beta1's
+     *  publishtime, so beta2 (published later) is offered. Dev/test builds
+     *  have no embedded moment and suppress equal-core offers entirely.
+     *  Lower core: never. ISO-8601 UTC strings sort lexicographically. */
+    private fun isUpdateOfferable(tag: String, publishedAt: String): Boolean {
+        val core = compareCore(versionParts(tag), versionParts(BuildConfig.VERSION_NAME))
+        return when {
+            core != null && core > 0 -> true
+            core != null -> false
+            else -> publishedAt.isNotBlank() &&
+                BuildConfig.RELEASE_PUBLISHED_AT.isNotBlank() &&
+                publishedAt > BuildConfig.RELEASE_PUBLISHED_AT
+        }
+    }
+
+    private suspend fun verifyChecksum(file: File, url: String, assetName: String = file.name): String {
+        var expected: String? = null
+        var lastFailure: Throwable? = null
+        // Official-domain candidates only (see DownloadMirrorPolicy.checksumCandidates):
+        // never let the checksum arrive over the same third-party mirrors the APK
+        // may have come from.
+        val candidates = DownloadMirrorPolicy.checksumCandidates(url)
+        for (candidate in candidates) {
+            try {
+                val request = Request.Builder().url(
+                    candidate
+                ).header("User-Agent", "SOMCP/${BuildConfig.VERSION_NAME}").build()
+                expected = client.newCall(request).await().use { response ->
+                    if (!response.isSuccessful) error("Checksum HTTP ${response.code}")
+                    val text = response.body.string()
+                    Regex("(?i)([a-f0-9]{64})\\s+\\*?${Regex.escape(assetName)}(?:\\s|$)")
+                        .find(text)?.groupValues?.get(1)
+                        ?: Regex("(?i)^[a-f0-9]{64}$").find(text.trim())?.value
+                        ?: error("Checksum file does not contain $assetName")
+                }
+                break
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                lastFailure = error
+            }
+        }
+        // Could not obtain a checksum -> hard failure, propagated to the caller
+        // which aborts the install (deliberately no soft downgrade anymore).
+        val expectedHash =
+            expected
+                ?: throw ChecksumUnavailableException(
+                    lastFailure?.message ?: "Checksum fetch failed"
+                )
+        val actual = fileSha256(file)
+        // Obtained a checksum but it does not match -> hard failure (tampering).
+        if (!actual.equals(
+                expectedHash,
+                true
+            )
+        ) {
+            throw ChecksumMismatchException("APK SHA-256 verification failed")
+        }
+        return actual.lowercase()
+    }
+
+    private fun fileSha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun File.readTextOrNull(): String? = runCatching {
+        takeIf(File::isFile)?.readText()
+    }.getOrNull()
+
+    companion object {
+        const val REPOSITORY_URL = "https://github.com/bilieebiliee1-design/SOMCP"
+        private const val RELEASES_URL = "https://api.github.com/repos/bilieebiliee1-design/SOMCP/releases"
+
+        /** ABIs the release pipeline publishes as single-ABI splits (plus one
+         *  -universal.apk). Order is irrelevant; matching is exact-token. */
+        private val RELEASE_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+
+        /** Picks the release asset matching the device's ABI, falling back to
+         *  the universal APK, then to a sole APK. Two properties matter:
+         *
+         *  1. Exact-token matching. A plain substring test mis-picks: "x86" is
+         *     contained in "x86_64", and the trailing "armeabi" of a 32-bit x86
+         *     device is contained in "armeabi-v7a" — an x86 device previously
+         *     downloaded the armeabi-v7a split (asset order is alphabetical)
+         *     instead of its own.
+         *  2. Device preference order. [abis] is [Build.SUPPORTED_ABIS]
+         *     (injected for tests): the first supported ABI with a matching
+         *     split wins, so an x86_64 device gets the x86_64 split even
+         *     though it also supports 32-bit x86 and the x86 split sorts
+         *     first alphabetically. */
+        internal fun selectApk(assets: List<JSONObject>, abis: Array<String>): JSONObject? {
+            val apks = assets.filter { it.optString("name").endsWith(".apk", true) }
+            val byAbi = apks.mapNotNull { asset ->
+                releaseAbiOf(asset.optString("name"))?.let { it to asset }
+            }.toMap()
+            return abis.firstNotNullOfOrNull { abi -> byAbi[abi.lowercase()] }
+                ?: apks.firstOrNull { "universal" in it.optString("name").lowercase() }
+                // Legacy single-APK releases carried no ABI token at all, and
+                // those are still installable everywhere. A lone *ABI-specific*
+                // split must NOT be used as a fallback: it is the wrong
+                // architecture for every other device, which is exactly the
+                // mis-download this selection was rewritten to stop.
+                ?: apks.singleOrNull()?.takeIf { releaseAbiOf(it.optString("name")) == null }
+        }
+
+        /** The ABI encoded in a release asset name, matched as a delimited
+         *  token (non-[a-z0-9_] on both sides) so "x86" never matches inside
+         *  "x86_64" and "armeabi" never matches inside "armeabi-v7a". */
+        private fun releaseAbiOf(name: String): String? {
+            val lower = name.lowercase()
+            return RELEASE_ABIS.firstOrNull { abi ->
+                Regex("(?<![a-z0-9_])${Regex.escape(abi)}(?![a-z0-9_])").containsMatchIn(lower)
+            }
+        }
+    }
+}

@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+package com.soreverse.mcp.engine
+
+import android.content.Context
+import android.net.Uri
+import com.soreverse.mcp.core.SettingsStore
+import org.json.JSONArray
+import org.json.JSONObject
+
+class NativeSoEngine(context: Context) {
+    private val appContext = context.applicationContext
+    private val runtime = EngineRuntime(appContext)
+    internal val lief get() = runtime.lief
+
+    fun setWorkDirectory(uri: Uri) = runtime.setWorkDirectory(uri)
+    fun listAvailableSos(prefix: String = "", limit: Int = 50, cursor: String = ""): JSONObject = runtime.listAvailableSos(prefix, limit, cursor)
+    fun open(path: String, temporary: Boolean): JSONObject = runtime.open(path, temporary)
+    fun analyzeApk(path: String, entryLimit: Int = 500): JSONObject = runtime.analyzeApk(path, entryLimit)
+    fun flutterBlutter(args: JSONObject): JSONObject = runtime.flutterBlutter(args)
+    fun openUrl(url: String, outputName: String = "", temporary: Boolean = false): JSONObject = runtime.openUrl(url, outputName, temporary)
+    fun listWorkspaces(): JSONObject = runtime.listWorkspaces()
+    fun close(workspaceId: String): JSONObject = runtime.close(workspaceId)
+    fun clearCaches() = runtime.clearCaches()
+    fun list(workspaceId: String, editSessionId: String, view: String, prefix: String, limit: Int, pathHint: String = "", cursor: String = ""): JSONObject =
+        runtime.list(workspaceId, editSessionId, view, prefix, limit, pathHint, cursor)
+    fun readElf(workspaceId: String, editSessionId: String, pathHint: String = ""): JSONObject = runtime.readElf(workspaceId, editSessionId, pathHint)
+    fun hexdump(workspaceId: String, editSessionId: String, locator: String, byteOffset: Int, maxBytes: Int): JSONObject =
+        runtime.hexdump(workspaceId, editSessionId, locator, byteOffset, maxBytes)
+    fun strings(
+        workspaceId: String,
+        editSessionId: String,
+        locator: String,
+        prefix: String,
+        limit: Int,
+        pathHint: String = "",
+        cursor: String = "",
+        regex: Boolean = false,
+        ignoreCase: Boolean = true,
+        encoding: String = "",
+        minConfidence: Double = 0.0
+    ): JSONObject = runtime.strings(workspaceId, editSessionId, locator, prefix, limit, pathHint, cursor, regex, ignoreCase, encoding, minConfidence)
+    fun disasm(
+        workspaceId: String,
+        editSessionId: String,
+        locator: String,
+        limit: Int,
+        cursor: String = "",
+        instructionOffset: Int = 0,
+        byteOffset: Int = 0,
+        maxBytes: Int = 4096,
+        addr: String = "",
+        thumb: Boolean? = null,
+        mode: String = "auto"
+    ): JSONObject = runtime.disasm(workspaceId, editSessionId, locator, limit, cursor, instructionOffset, byteOffset, maxBytes, addr, thumb, mode)
+    fun outline(workspaceId: String, editSessionId: String, locator: String, limit: Int): JSONObject =
+        runtime.outline(workspaceId, editSessionId, locator, limit)
+    fun xrefSymbol(workspaceId: String, editSessionId: String, locator: String, refDirection: String, limit: Int): JSONObject =
+        runtime.xrefSymbol(workspaceId, editSessionId, locator, refDirection, limit)
+    fun xrefString(workspaceId: String, editSessionId: String, locator: String, limit: Int): JSONObject =
+        runtime.xrefString(workspaceId, editSessionId, locator, limit)
+    fun search(workspaceId: String, editSessionId: String, target: String, query: String, limit: Int, pathHint: String = "", cursor: String = ""): JSONObject =
+        runtime.search(workspaceId, editSessionId, target, query, limit, pathHint, cursor)
+    fun editOpen(workspaceId: String): JSONObject = runtime.editOpen(workspaceId)
+    fun editSnapshot(workspaceId: String, editSessionId: String, label: String = ""): JSONObject = runtime.editSnapshot(workspaceId, editSessionId, label)
+    fun editRollback(workspaceId: String, editSessionId: String, snapshotIndex: Int = -1): JSONObject =
+        runtime.editRollback(workspaceId, editSessionId, snapshotIndex)
+    fun editRollbackById(workspaceId: String, editSessionId: String, snapshotId: String): JSONObject =
+        runtime.editRollbackById(workspaceId, editSessionId, snapshotId)
+    fun editDropSnapshotById(workspaceId: String, editSessionId: String, snapshotId: String): JSONObject =
+        runtime.editDropSnapshotById(workspaceId, editSessionId, snapshotId)
+    fun editUndo(workspaceId: String, editSessionId: String, count: Int = 1): JSONObject = runtime.editUndo(workspaceId, editSessionId, count)
+    fun editRedo(workspaceId: String, editSessionId: String, count: Int = 1): JSONObject = runtime.editRedo(workspaceId, editSessionId, count)
+    fun editReset(workspaceId: String, editSessionId: String): JSONObject = runtime.editReset(workspaceId, editSessionId)
+    fun readStats(workspaceId: String, editSessionId: String = "", pathHint: String = ""): JSONObject = runtime.readStats(workspaceId, editSessionId, pathHint)
+    fun assembleRaw(workspaceId: String, editSessionId: String = "", asm: String, addr: Long = 0L, thumb: Boolean? = null, mode: String = "auto"): JSONObject =
+        runtime.assembleRaw(workspaceId, editSessionId, asm, addr, thumb, mode)
+    fun analysisReport(workspaceId: String, editSessionId: String = "", writeToFile: Boolean = true): JSONObject =
+        runtime.analysisReport(workspaceId, editSessionId, writeToFile)
+    fun editAudit(workspaceId: String, editSessionId: String): JSONObject = runtime.editAudit(workspaceId, editSessionId)
+    fun editHex(workspaceId: String, editSessionId: String, locator: String, edits: JSONArray, dryRun: Boolean = false): JSONObject =
+        runtime.editHex(workspaceId, editSessionId, locator, edits, dryRun)
+    fun editHexVa(workspaceId: String, editSessionId: String, va: Long, patch: ByteArray, dryRun: Boolean = false): JSONObject =
+        runtime.editHexVa(workspaceId, editSessionId, va, patch, dryRun)
+    fun editAsm(workspaceId: String, editSessionId: String, locator: String, edits: JSONArray, dryRun: Boolean = false): JSONObject =
+        runtime.editAsm(workspaceId, editSessionId, locator, edits, dryRun)
+    fun editSymbol(workspaceId: String, editSessionId: String, locator: String, edits: JSONArray, dryRun: Boolean = false): JSONObject =
+        runtime.editSymbol(workspaceId, editSessionId, locator, edits, dryRun)
+    fun editCheck(workspaceId: String, editSessionId: String): JSONObject = runtime.editCheck(workspaceId, editSessionId)
+    fun build(
+        workspaceId: String,
+        editSessionId: String,
+        outputName: String,
+        conflictStrategy: String = "",
+        writeReport: Boolean? = null,
+        writeToWorkDir: Boolean? = null
+    ): JSONObject = runtime.build(
+        workspaceId,
+        editSessionId,
+        outputName,
+        conflictStrategy,
+        writeReport,
+        writeToWorkDir
+    )
+    fun buildMany(
+        workspaceId: String,
+        editSessionId: String,
+        outputs: JSONArray,
+        conflictStrategy: String = "",
+        writeReport: Boolean? = null,
+        writeToWorkDir: Boolean? = null
+    ): JSONObject = runtime.buildMany(
+        workspaceId,
+        editSessionId,
+        outputs,
+        conflictStrategy,
+        writeReport,
+        writeToWorkDir
+    )
+    fun listBuildOutputs(prefix: String = "", limit: Int = 200): JSONObject = runtime.listBuildOutputs(prefix, limit)
+    fun persistAudit(workspaceId: String, editSessionId: String): JSONObject = runtime.persistAudit(workspaceId, editSessionId)
+    fun listAudits(prefix: String = "", limit: Int = 100): JSONObject = runtime.listAudits(prefix, limit)
+    fun loadAudit(file: String): JSONObject = runtime.loadAudit(file)
+    fun diff(workspaceId: String, editSessionId: String, limit: Int, compareSessionId: String = "", compareWorkspaceId: String = ""): JSONObject =
+        runtime.diff(workspaceId, editSessionId, limit, compareSessionId, compareWorkspaceId)
+    fun analyze(workspaceId: String, editSessionId: String, pathHint: String = ""): JSONObject = runtime.analyze(workspaceId, editSessionId, pathHint)
+    fun overview(workspaceId: String, editSessionId: String = "", pathHint: String = ""): JSONObject = runtime.overview(workspaceId, editSessionId, pathHint)
+    fun continuePage(cursor: String): JSONObject = runtime.continuePage(cursor)
+    fun snapshotBytes(workspaceId: String, editSessionId: String): Pair<ByteArray, String> = runtime.snapshotBytes(workspaceId, editSessionId)
+    fun fixSections(workspaceId: String, editSessionId: String): JSONObject = runtime.fixSections(workspaceId, editSessionId)
+    fun rzAnalyze(workspaceId: String, editSessionId: String = ""): JSONObject = runtime.rzAnalyze(workspaceId, editSessionId)
+    fun rzFunctions(workspaceId: String, editSessionId: String = "", limit: Int = SettingsStore(appContext).defaultLimit, cursor: String = ""): JSONObject =
+        runtime.rzFunctions(workspaceId, editSessionId, limit, cursor)
+    fun rzCfg(workspaceId: String, editSessionId: String, locator: String): JSONObject = runtime.rzCfg(workspaceId, editSessionId, locator)
+    fun rzXrefs(workspaceId: String, editSessionId: String, locator: String, direction: String = "to"): JSONObject =
+        runtime.rzXrefs(workspaceId, editSessionId, locator, direction)
+    fun rzSearchBytes(workspaceId: String, editSessionId: String, pattern: String, fromVa: Long = 0, toVa: Long = 0): JSONObject =
+        runtime.rzSearchBytes(workspaceId, editSessionId, pattern, fromVa, toVa)
+    fun rzScanCrypto(workspaceId: String, editSessionId: String = ""): JSONObject = runtime.rzScanCrypto(workspaceId, editSessionId)
+    fun rzEsilStep(workspaceId: String, editSessionId: String, locator: String, stepCount: Int = 1): JSONObject =
+        runtime.rzEsilStep(workspaceId, editSessionId, locator, stepCount)
+    fun rzDiff(workspaceIdA: String, editSessionIdA: String, workspaceIdB: String, editSessionIdB: String): JSONObject =
+        runtime.rzDiff(workspaceIdA, editSessionIdA, workspaceIdB, editSessionIdB)
+    fun rzCommand(workspaceId: String, editSessionId: String = "", command: String, unsafe: Boolean = false): JSONObject =
+        runtime.rzCommand(workspaceId, editSessionId, command, unsafe)
+    fun rzDecompile(workspaceId: String, editSessionId: String = "", locator: String = "", strict: Boolean = true): JSONObject =
+        runtime.rzDecompile(workspaceId, editSessionId, locator, strict)
+    fun capabilityRegistry(): JSONObject = runtime.capabilityRegistry()
+    fun jniScan(workspaceId: String, editSessionId: String = ""): JSONObject = runtime.jniScan(workspaceId, editSessionId)
+    fun jniResolve(workspaceId: String, editSessionId: String = "", query: String): JSONObject = runtime.jniResolve(workspaceId, editSessionId, query)
+    fun jniCapabilities(): JSONObject = runtime.jniCapabilities()
+    fun packerScan(workspaceId: String, editSessionId: String = ""): JSONObject = runtime.packerScan(workspaceId, editSessionId)
+    fun packerCapabilities(): JSONObject = PackerFingerprint.capabilities()
+    fun obfuscScan(workspaceId: String, editSessionId: String = "", limit: Int = 40): JSONObject = runtime.obfuscScan(workspaceId, editSessionId, limit)
+    fun obfuscCapabilities(): JSONObject = runtime.obfuscCapabilities()
+    fun obfuscDeflatten(workspaceId: String, editSessionId: String = "", locator: String = "", symbol: String = "", limit: Int = 40): JSONObject =
+        runtime.obfuscDeflatten(workspaceId, editSessionId, locator, symbol, limit)
+    fun obfuscDeflattenCapabilities(): JSONObject = runtime.obfuscDeflattenCapabilities()
+    fun strDecryptScan(workspaceId: String, editSessionId: String = "", limit: Int = 40): JSONObject = runtime.strDecryptScan(workspaceId, editSessionId, limit)
+    fun strDecrypt(workspaceId: String, editSessionId: String = "", locator: String = "", length: Int = 32, keyHex: String = ""): JSONObject =
+        runtime.strDecrypt(workspaceId, editSessionId, locator, length, keyHex)
+    fun strDecryptCapabilities(): JSONObject = runtime.strDecryptCapabilities()
+    fun strDecryptHints(): JSONObject = runtime.strDecryptHints()
+    fun antiDebugScan(workspaceId: String, editSessionId: String = ""): JSONObject = runtime.antiDebugScan(workspaceId, editSessionId)
+    fun antiDebugCapabilities(): JSONObject = runtime.antiDebugCapabilities()
+    fun importTrace(workspaceId: String, editSessionId: String = ""): JSONObject = runtime.importTrace(workspaceId, editSessionId)
+    fun importCapabilities(): JSONObject = runtime.importCapabilities()
+    fun liefDispatch(
+        workspaceId: String,
+        editSessionId: String = "",
+        op: String,
+        objectPath: String = "",
+        method: String = "",
+        args: JSONArray = JSONArray(),
+        dryRun: Boolean = false
+    ): JSONObject = runtime.liefDispatch(workspaceId, editSessionId, op, objectPath, method, args, dryRun)
+    fun unidbgDispatch(workspaceId: String, editSessionId: String = "", op: String, method: String = "", args: JSONArray = JSONArray()): JSONObject =
+        runtime.unidbgDispatch(workspaceId, editSessionId, op, method, args)
+    fun dynamicDispatch(workspaceId: String, editSessionId: String = "", op: String, method: String = "", args: JSONArray = JSONArray()): JSONObject =
+        runtime.dynamicDispatch(workspaceId, editSessionId, op, method, args)
+    fun dynamicStatus(): JSONObject = runtime.dynamicDispatch("", "", "status", "", JSONArray())
+    fun xansoDispatch(workspaceId: String, editSessionId: String = "", op: String): JSONObject = runtime.xansoDispatch(workspaceId, editSessionId, op)
+    fun xansoBuildSections(workspaceId: String, editSessionId: String = "", force: Boolean = false): JSONObject =
+        runtime.xansoBuildSections(workspaceId, editSessionId, force)
+    fun liefPatchAddress(workspaceId: String, editSessionId: String, va: Long, patch: ByteArray): JSONObject =
+        runtime.liefPatchAddress(workspaceId, editSessionId, va, patch)
+    fun liefAddExportedFunction(workspaceId: String, editSessionId: String, addr: Long, name: String): JSONObject =
+        runtime.liefAddExportedFunction(workspaceId, editSessionId, addr, name)
+    fun liefRemoveSymbol(workspaceId: String, editSessionId: String, name: String): JSONObject = runtime.liefRemoveSymbol(workspaceId, editSessionId, name)
+    fun emulationStatus(): JSONObject = runtime.emulationStatus()
+    fun emulate(workspaceId: String, editSessionId: String, symbolName: String, args: JSONArray, trace: Boolean): JSONObject =
+        runtime.emulate(workspaceId, editSessionId, symbolName, args, trace)
+    fun dumpMemory(workspaceId: String, editSessionId: String, addr: Long, size: Int): JSONObject = runtime.dumpMemory(workspaceId, editSessionId, addr, size)
+}
