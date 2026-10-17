@@ -127,3 +127,33 @@
 -keep class com.soreverse.mcp.core.SelfArtifactGuard {
     *;
 }
+
+# ---------------------------------------------------------------------------
+# APK full-chain toolchain (jadx / ARSCLib+APKEditor / smali / apksig /
+# bouncycastle / DexKit). All of these are reflection- and service-loader-heavy:
+# jadx resolves plugins and code writers by name, APKEditor/ARSCLib discover
+# handlers through reflection, and apksig reaches Bouncy Castle providers via
+# Security.getProvider at runtime. R8 cannot see those edges.
+# ---------------------------------------------------------------------------
+-keep class jadx.** { *; }
+-keep class jadx.api.** { *; }
+-dontwarn jadx.**
+
+-keep class com.reandroid.** { *; }
+-keep class io.github.reandroid.** { *; }
+-dontwarn com.reandroid.**
+-dontwarn io.github.reandroid.**
+
+-keep class com.android.tools.smali.** { *; }
+-dontwarn com.android.tools.smali.**
+
+-keep class com.android.apksig.** { *; }
+-dontwarn com.android.apksig.**
+
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.bouncycastle.**
+
+# DexKit is a C++/JNI library: its Java entry points and query DSL classes are
+# addressed from native code and by reflection from the query builder.
+-keep class org.luckypray.dexkit.** { *; }
+-dontwarn org.luckypray.dexkit.**

@@ -1538,7 +1538,14 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                         "EMULATION_DISABLED", "EMULATION_ERROR", "EMULATOR_UNAVAILABLE", "NATIVE_UNAVAILABLE",
                         "RIZIN_UNAVAILABLE", "RIZIN_CFG_FAILED", "RIZIN_SEARCH_FAILED", "RIZIN_COMMAND_FAILED", "LIEF_UNAVAILABLE", "PATCH_FAILED",
                         "SYMBOL_NOT_FOUND", "MEMORY_MAP_ERROR", "MEMORY_WRITE_ERROR", "MEMORY_PROTECT_ERROR",
-                        "MEMORY_UNMAP_ERROR", "SERVER_BUSY", "RATE_LIMITED", "TOOL_DISABLED"
+                        "MEMORY_UNMAP_ERROR", "SERVER_BUSY", "RATE_LIMITED", "TOOL_DISABLED",
+                        // APK toolchain (jadx / baksmali / APKEditor / apksig / DexKit / root shell)
+                        "FILE_NOT_FOUND", "DIR_NOT_FOUND", "INPUT_TOO_LARGE", "FILE_TOO_LARGE",
+                        "INSUFFICIENT_MEMORY", "SELF_ANALYSIS_FORBIDDEN",
+                        "JADX_FAILED", "CLASS_NOT_FOUND", "BAKSMALI_FAILED", "SMALI_ASSEMBLE_FAILED",
+                        "APK_DECODE_FAILED", "APKEDITOR_FAILED", "APK_SIGN_FAILED", "SIGN_INFO_FAILED",
+                        "APK_DIFF_FAILED", "EXTRACT_FAILED", "DEXKIT_FAILED", "SCAN_FAILED",
+                        "UNPACK_NO_DEX", "FRIDA_START_FAILED", "FRIDA_STOP_FAILED", "NO_ROOT", "PS_FAILED"
                     )
                 )
             )

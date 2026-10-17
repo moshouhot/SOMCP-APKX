@@ -2616,7 +2616,26 @@ object ToolCatalog {
         buildSo,
         systemControl,
         appConfig,
-        metaInfo
+        metaInfo,
+        // ------------------------------------------------------------------
+        // APK full-chain toolchain. Ported verbatim from the XuanXingNieHe
+        // derivative on top of this 1.0.22 baseline: every handler here is
+        // pure JVM (jadx / baksmali / APKEditor / apksig / DexKit) except
+        // dex_unpack and frida_control, which drive a root shell.
+        // ------------------------------------------------------------------
+        JadxTool.decompile,
+        StaticTools.baksmali,
+        StaticTools.apkDecode,
+        ApkBuildTool.smaliAssemble,
+        ApkBuildTool.apkSign,
+        ApkEditorTool.rebuild,
+        DexKitTool.search,
+        StringScanTool.scan,
+        ApkSignInfoTool.info,
+        ApkDiffTool.diff,
+        ApkExtractTool.extract,
+        UnpackTool.dexDump,
+        FridaTool.control
     )
 
     internal val registry = ToolCatalogRegistry(ALL)

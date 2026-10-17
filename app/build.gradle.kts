@@ -379,4 +379,29 @@ dependencies {
 
     // Argon2 key derivation for encrypted backup/restore
     implementation("com.lambdapioneer.argon2kt:argon2kt:1.6.0")
+
+    // ---------------------------------------------------------------------
+    // APK full-chain toolchain (ported from the XuanXingNieHe derivative).
+    // Every entry below is a pure-JVM library: no extra native ABI, no new
+    // submodule, so the existing 4-ABI split and native link checks are
+    // untouched. `dexkit` is the only one shipping its own arm64 .so, which
+    // the AAR supplies automatically.
+    // ---------------------------------------------------------------------
+    // jadx: DEX -> Java decompiler (jadx_decompile)
+    implementation("io.github.skylot:jadx-core:1.5.1")
+    implementation("io.github.skylot:jadx-dex-input:1.5.1")
+    implementation("org.slf4j:slf4j-api:2.0.16")
+    // ARSCLib + APKEditor: resource decoding, full rebuild, split-package merge (apk_decode/apk_rebuild)
+    implementation("io.github.reandroid:ARSCLib:1.3.5")
+    implementation("com.github.REAndroid:APKEditor:V1.4.9")
+    // smali/baksmali: DEX <-> smali round-trip (baksmali_decode/smali_assemble)
+    implementation("com.android.tools.smali:smali:3.0.9")
+    implementation("com.android.tools.smali:smali-baksmali:3.0.9")
+    implementation("com.android.tools.smali:smali-dexlib2:3.0.9")
+    // apksig: v1/v2/v3 signing + signature verification (apk_sign/apk_sign_info)
+    implementation("com.android.tools.build:apksig:8.7.3")
+    // bouncycastle: self-signed signing key generated on-device (apk_sign)
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
+    // DexKit: string/call-signature driven deobfuscation search (dex_search)
+    implementation("org.luckypray:dexkit:2.0.4")
 }

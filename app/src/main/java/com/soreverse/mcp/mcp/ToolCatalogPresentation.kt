@@ -12,6 +12,24 @@ object ToolCatalogPresentation {
     fun categoryDescriptions(zh: Boolean): List<Pair<String, String>> = listOf(
         "workspace" to
             (if (zh) "工作区生命周期：列出、打开、关闭 SO" else "Workspace lifecycle: list, open, close SO files"),
+        "decompile" to
+            (
+                if (zh) {
+                    "反编译与回编：DEX→Java（jadx）、DEX→smali（baksmali）、smali→DEX、反混淆查找"
+                } else {
+                    "Decompile / reassemble: DEX→Java (jadx), DEX→smali (baksmali), " +
+                        "smali→DEX, deobfuscation search"
+                }
+                ),
+        "dynamic" to
+            (
+                if (zh) {
+                    "真机动态：frida-server 起停与进程枚举、root 内存 DEX 脱壳"
+                } else {
+                    "On-device dynamic: frida-server lifecycle and process listing, " +
+                        "root in-memory DEX unpacking"
+                }
+                ),
         "analyze" to
             (if (zh) "深度分析：ELF 结构、函数列表、CFG、密码学扫描、交叉引用、ESIL 模拟" else "Deep analysis: ELF structure, functions, CFG, crypto scan, xrefs, ESIL emulation"),
         "search" to (if (zh) "搜索：十六进制模式、字符串" else "Search: hex patterns, strings"),
@@ -40,7 +58,15 @@ object ToolCatalogPresentation {
                 }
                 ),
         "session" to (if (zh) "编辑会话：打开、历史管理、审计" else "Edit session: open, history, audit"),
-        "build" to (if (zh) "构建：输出补丁后的 SO 文件" else "Build: export patched SO file"),
+        "build" to
+            (
+                if (zh) {
+                    "构建与签名：导出补丁后的 SO、APK 回编/合并拆分包、v1/v2/v3 签名"
+                } else {
+                    "Build and sign: export patched SO, APK rebuild / split-package merge, " +
+                        "v1/v2/v3 signing"
+                }
+                ),
         "system" to (if (zh) "系统控制：隧道、APK MCP 桥" else "System: tunnel, APK MCP bridge"),
         "meta" to
             (if (zh) "元信息：帮助、工具列表、统计、批量、分页" else "Meta: help, tool list, stats, batch, pagination")
